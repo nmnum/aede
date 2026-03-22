@@ -18,7 +18,7 @@ from pathlib import Path
 from .modules.problem_framing import ProblemSpec, load_spec_from_yaml, load_spec_from_dict
 from .modules.ivo_layer import create_ivo, BaseIVO
 from .modules.surrogate import GPSurrogate
-from .modules.candidate_generation import CandidateGenerator
+from .modules.candidate_generation import CandidateGenerator, compute_hypervolume
 from .modules.constraint_layer import ConstraintLayer
 from .modules.decision_engine import DecisionEngine
 from .modules.trace_logger import DecisionTraceLogger
@@ -215,7 +215,6 @@ def run_campaign(
             pf_before = _update_pareto_front(Y_all[feasible_mask][:-len(manifest.selected)] if feasible_mask.sum() > len(manifest.selected) else np.empty((0, spec.n_objectives())))
             pf_after = pareto_front
             ref = spec.reference_point()
-            from .modules.candidate_generation import compute_hypervolume
             hv_before = compute_hypervolume(pf_before, ref) if len(pf_before) > 0 else 0.0
             hv_after = compute_hypervolume(pf_after, ref) if len(pf_after) > 0 else 0.0
             hv_improvements[prov] = max(0.0, hv_after - hv_before) * len(obs_list) / len(manifest.selected)
