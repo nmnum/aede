@@ -107,7 +107,6 @@ STRATEGY_COLORS = {"bo": "#1f77b4", "nsga": "#e67e22", "diversity": "#27ae60"}
 
 def make_pareto_fig(Y_all, pareto_front, obj_names):
     fig = go.Figure()
-    # All observations
     if len(Y_all) > 0:
         fig.add_trace(go.Scatter(
             x=Y_all[:, 0], y=Y_all[:, 1],
@@ -115,7 +114,6 @@ def make_pareto_fig(Y_all, pareto_front, obj_names):
             marker=dict(color="#aab4c8", size=6, opacity=0.5),
             name="All observations",
         ))
-    # Pareto front
     if len(pareto_front) > 0:
         pf = pareto_front[np.argsort(pareto_front[:, 0])]
         fig.add_trace(go.Scatter(
@@ -232,10 +230,14 @@ with st.sidebar:
     st.caption("Adaptive Experimental Decision Engine")
     st.divider()
 
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = "🚀 Run Campaign"
+
     tab = st.radio(
         "Navigation",
         ["🚀 Run Campaign", "📊 Live Monitor", "🔍 Insight Report"],
         label_visibility="collapsed",
+        key="active_tab",
     )
     st.divider()
 
@@ -319,9 +321,15 @@ if tab == "🚀 Run Campaign":
             disabled=st.session_state.running,
             use_container_width=True,
         )
+
     with col_info:
         if st.session_state.running:
-            st.info("Campaign is running… switch to Live Monitor tab.")
+            live_hv = st.session_state.get("live_hv", [])
+            live_iter = st.session_state.get("live_iter", 0)
+            if live_hv:
+                st.info(f"⏳ Running… iteration {live_iter}, HV = {live_hv[-1]:.4f} — switch to **Live Monitor**")
+            else:
+                st.info("⏳ Campaign starting… switch to **Live Monitor** tab.")
 
     if go_btn and not st.session_state.running:
         objectives = [Objective(name=n, direction=d) for n, d in zip(obj_names, obj_dirs)]
@@ -371,19 +379,8 @@ if tab == "🚀 Run Campaign":
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+        st.session_state.active_tab = "📊 Live Monitor"
         st.rerun()
-
-# Show live progress on Run Campaign tab while campaign is running
-if st.session_state.get("running") and tab == "🚀 Run Campaign":
-    st.divider()
-    st.info("⏳ Campaign is running — switch to **Live Monitor** tab to watch progress, or wait here.")
-    live_hv = st.session_state.get("live_hv", [])
-    live_iter = st.session_state.get("live_iter", 0)
-    if live_hv:
-        st.metric("Current HV", f"{live_hv[-1]:.4f}", f"Iteration {live_iter}")
-    time.sleep(0.5)
-    st.rerun()
-
 
 # ── Tab: Live Monitor ─────────────────────────────────────────────────────────
 elif tab == "📊 Live Monitor":
@@ -393,13 +390,22 @@ elif tab == "📊 Live Monitor":
         st.info("No campaign running. Go to **Run Campaign** to start one.")
         st.stop()
 
-    # Live refresh while running
+    # Live refresh while running — protect tab state before rerun
     if st.session_state.running:
-        time.sleep(0.3)
+        st.session_state.active_tab = "📊 Live Monitor"
+        live_hv = st.session_state.get("live_hv", [])
+        live_iter = st.session_state.get("live_iter", 0)
+        if live_hv:
+            st.info(f"⏳ Running… iteration **{live_iter}**, current HV = **{live_hv[-1]:.4f}**")
+            st.progress(min(live_iter / max(live_iter + 1, 1), 1.0), text=f"Iteration {live_iter} in progress…")
+        else:
+            st.info("⏳ Campaign starting, please wait…")
+        time.sleep(0.5)
         st.rerun()
 
     results = st.session_state.results
     if results is None:
+        st.session_state.active_tab = "📊 Live Monitor"
         st.warning("Campaign starting…")
         time.sleep(0.5)
         st.rerun()
@@ -407,7 +413,7 @@ elif tab == "📊 Live Monitor":
     hv_hist = results["hv_history"]
     pareto = results["pareto_front"]
     Y_all = results["Y_all"]
-    n_obj = pareto.shape[1] if len(pareto) > 0 else 2
+    n_obj = pareto.shape[1] if len(pareto) > 0 else (results.get("n_objectives", 2))
 
     # ── Top metrics ──
     m1, m2, m3, m4 = st.columns(4)
@@ -423,8 +429,7 @@ elif tab == "📊 Live Monitor":
     st.divider()
 
     # ── Pareto front ──
-    obj_names = [o.name for o in results["insight_report"].cost_efficiency.__class__.__mro__] if False else None
-    # Recover obj names from insight or default
+    obj_names = None
     if st.session_state.logger:
         camps = st.session_state.logger.get_all_campaigns()
         if camps:
@@ -445,7 +450,6 @@ elif tab == "📊 Live Monitor":
             fig_pf = make_pareto_fig(Y_all, pareto, obj_names[:2])
             st.plotly_chart(fig_pf, use_container_width=True)
         else:
-            # 3D scatter for tri-objective
             fig_3d = go.Figure(data=[
                 go.Scatter3d(
                     x=Y_all[:, 0], y=Y_all[:, 1], z=Y_all[:, 2],
@@ -470,7 +474,6 @@ elif tab == "📊 Live Monitor":
         st.markdown('<div class="section-header">EIG/cost vs stopping threshold</div>', unsafe_allow_html=True)
         if st.session_state.logger:
             hv_data = st.session_state.logger.get_hv_history(st.session_state.campaign_hash or "")
-            # Use threshold from spec if available — default 0.005
             st.plotly_chart(make_eig_fig(hv_data, 0.005), use_container_width=True)
 
     # ── Strategy weights ──
