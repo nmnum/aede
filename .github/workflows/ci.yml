@@ -35,8 +35,8 @@ jobs:
         pip install pytest
 
     - name: Run standalone test suite
-      run: |
-        python tests/run_tests.py
+      run: python tests/run_tests.py
+      working-directory: ${{ github.workspace }}
 
     - name: Run pytest
       run: |
