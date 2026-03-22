@@ -381,6 +381,7 @@ if tab == "🚀 Run Campaign":
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+        st.session_state.active_tab = "📊 Live Monitor"
         st.rerun()
 
 # ── Tab: Live Monitor ─────────────────────────────────────────────────────────
@@ -391,13 +392,22 @@ elif tab == "📊 Live Monitor":
         st.info("No campaign running. Go to **Run Campaign** to start one.")
         st.stop()
 
-    # Live refresh while running
+    # Live refresh while running — protect tab state before rerun
     if st.session_state.running:
-        time.sleep(0.3)
+        st.session_state.active_tab = "📊 Live Monitor"
+        live_hv = st.session_state.get("live_hv", [])
+        live_iter = st.session_state.get("live_iter", 0)
+        if live_hv:
+            st.info(f"⏳ Running… iteration **{live_iter}**, current HV = **{live_hv[-1]:.4f}**")
+            st.progress(min(live_iter / max(live_iter + 1, 1), 1.0))
+        else:
+            st.info("⏳ Campaign starting, please wait…")
+        time.sleep(0.5)
         st.rerun()
 
     results = st.session_state.results
     if results is None:
+        st.session_state.active_tab = "📊 Live Monitor"
         st.warning("Campaign starting…")
         time.sleep(0.5)
         st.rerun()
