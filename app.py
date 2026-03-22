@@ -323,9 +323,15 @@ if tab == "🚀 Run Campaign":
             disabled=st.session_state.running,
             use_container_width=True,
         )
+
     with col_info:
         if st.session_state.running:
-            st.info("Campaign is running… switch to Live Monitor tab.")
+            live_hv = st.session_state.get("live_hv", [])
+            live_iter = st.session_state.get("live_iter", 0)
+            if live_hv:
+                st.info(f"⏳ Running… iteration {live_iter}, HV = {live_hv[-1]:.4f} — switch to **Live Monitor**")
+            else:
+                st.info("⏳ Campaign starting… switch to **Live Monitor** tab.")
 
     if go_btn and not st.session_state.running:
         objectives = [Objective(name=n, direction=d) for n, d in zip(obj_names, obj_dirs)]
@@ -376,18 +382,6 @@ if tab == "🚀 Run Campaign":
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         st.rerun()
-
-# Show live progress on Run Campaign tab while campaign is running
-if st.session_state.get("running") and tab == "🚀 Run Campaign":
-    st.divider()
-    st.info("⏳ Campaign is running — switch to **Live Monitor** tab to watch progress, or wait here.")
-    live_hv = st.session_state.get("live_hv", [])
-    live_iter = st.session_state.get("live_iter", 0)
-    if live_hv:
-        st.metric("Current HV", f"{live_hv[-1]:.4f}", f"Iteration {live_iter}")
-    time.sleep(0.5)
-    st.rerun()
-
 
 # ── Tab: Live Monitor ─────────────────────────────────────────────────────────
 elif tab == "📊 Live Monitor":
