@@ -1,15 +1,26 @@
-# AEDE — Adaptive Experimental Decision Engine
+# ⚗ AEDE: Adaptive Experimental Decision Engine
 
-> A decision-theoretic framework for self-driving labs that integrates principled stopping criteria, cost-aware experiment selection, and causal post-campaign attribution — connecting optimisation to campaign-level budget intelligence.
+A decision-theoretic framework for self-driving labs that integrates principled stopping criteria, cost-aware experiment selection, and causal post-campaign attribution.
 
-[![CI](https://github.com/YOUR_USERNAME/aede/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/aede/actions)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+**Live demo:** [aede-app.streamlit.app](https://aede-app.streamlit.app)
 
 ---
 
-## One-command demo
+## What it does
 
+AEDE runs adaptive optimisation campaigns over multi-objective experimental spaces. At each iteration it:
+
+1. Generates candidate experiments using a portfolio of three strategies (Bayesian optimisation, NSGA-II, diversity sampling)
+2. Scores each candidate by Expected Pareto Improvement × uncertainty × feasibility ÷ cost
+3. Selects the best batch to run
+4. Fits a Gaussian Process surrogate to all observations so far
+5. Stops automatically when information gain per cost falls below a threshold for N consecutive iterations
+
+After the campaign, an insight report summarises cost efficiency, strategy phase transitions, surrogate calibration, and constraint violation patterns.
+
+---
+
+## Quickstart
 ```bash
 git clone https://github.com/YOUR_USERNAME/aede.git
 cd aede
@@ -17,254 +28,194 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open `http://localhost:8501` — configure a campaign, launch, watch the Pareto front build live.
-
-To run headless from the CLI:
-
+For the production BoTorch backend (GPU-accelerated):
 ```bash
-python -m aede.cli --config configs/vlmop2_quick.yaml --db results/run1.db
-# Then inspect results in the dashboard:
-streamlit run app.py
+pip install -r requirements-production.txt
 ```
 
 ---
 
-## Why AEDE
+## Using the Streamlit app
 
-Most AI-driven optimisation systems stop at: *here are good candidates.*
+### Benchmarks (built-in test problems)
 
-AEDE goes further: **here is the best decision given budget, risk, and expected value — and here is whether we should be running experiments at all.**
-
-The framing comes from chemistry: a reaction earns credibility not by running, but by its yield, selectivity, and energetic cost. AI-driven experimental campaigns should be held to the same standard.
-
-| Chemistry concept | SDL translation | AEDE module |
+| Benchmark | Objectives | Description |
 |---|---|---|
-| Theoretical yield | Max Pareto improvement achievable | Surrogate upper confidence bound |
-| Observed yield | Actual HV improvement per campaign | Decision Trace Logger |
-| Selectivity | Fraction of experiments that were informative | Insight Engine |
-| Energetic cost | Budget consumed per unit of Pareto advance | Decision Engine scoring |
+| VLMOP2 | 2 (maximize both) | Standard bi-objective analytic function — use for sanity checking |
+| Molecular Proxy | 2 (maximize both) | Drug-discovery proxy with ADMET synthesis constraints |
+| High Constraint | 3 (maximize all) | Tri-objective with ~40% infeasible space |
+
+> **Objective directions:** VLMOP2 and Molecular both require **maximize** for both objectives. High Constraint requires **maximize** for all three. Setting a direction to **minimize** is supported — AEDE negates the objective internally so the hypervolume calculation remains correct.
+
+### Recommended settings for a first run
+
+| Setting | Value |
+|---|---|
+| Benchmark | VLMOP2 |
+| Input dimensions | 2 |
+| Total experiments | 60 |
+| Per iteration | 5 |
+| MC samples | 64–128 |
+| EIG/cost threshold | 0.005 |
+| Consecutive iters | 3 |
+| Min experiments | 15 |
+
+Expected outcome: HV ≈ 0.06–0.09, 6 Pareto points, campaign converges in 6–8 iterations.
+
+### Healthy result indicators
+
+| Metric | Healthy range |
+|---|---|
+| Final HV | > 0.05 (VLMOP2) |
+| Pareto front size | ≥ 4 points |
+| HV yield / experiment | > 0.001 |
+| Budget efficiency | > 50% |
+| Calibration trend | Stable or Improving |
 
 ---
 
-## Architecture
+## Using your own experimental data
 
+The app accepts a CSV upload to warm-start the surrogate from real measurements. This skips the random initialisation phase and fits the GP directly to your data.
+
+### CSV format
 ```
-ProblemSpec (config + validation)
-        ↓
-Candidate Generation (BO · NSGA-II · Diversity)
-        ↓
-Constraint Intelligence Layer (hard filter + soft GP classifier)
-        ↓
-Decision Engine ← THE CORE
-  • EPI × uncertainty × feasibility / cost scoring
-  • Principled stopping criterion (EIG/cost threshold)
-  • Optional Gittins index extension
-        ↓
-In-Vitro Oracle (3 benchmark landscapes)
-        ↓
-Decision Trace Logger (append-only SQLite)
-        ↓
-Insight Engine (phase transitions · calibration · attribution · yield report)
-        ↓
-Streamlit Dashboard + CLI
+x_0,x_1,yield,selectivity,feasible
+0.12,0.55,0.81,0.63,1
+0.43,0.21,0.74,0.71,1
+0.88,0.90,0.51,0.82,0
 ```
 
-### Module map
+**Columns:**
+- `x_0, x_1, ..., x_N` — input variables (one per dimension). Normalise to approximately [-3, 3] for best GP performance.
+- Objective columns — must **exactly match** the objective names you typed in the sidebar (e.g. if you named them `yield` and `selectivity`, the CSV columns must be `yield` and `selectivity`).
+- `feasible` (optional) — 1 if the experiment produced a valid result, 0 if it violated a constraint. Omit this column if all experiments were valid.
 
-| # | Module | Responsibility | Primary output |
-|---|--------|---------------|----------------|
-| 0 | Problem Framing | Validates config before any computation | `ProblemSpec` hash |
-| 1 | Candidate Generation | Multi-strategy pool with portfolio weighting | Candidates + provenance tags |
-| 2 | Constraint Intelligence | Hard filter + learnable soft constraint GP | Feasibility probabilities |
-| 3 | Decision Engine | Scores, ranks, stops | Decision manifest + rationales |
-| 4 | IVO Layer | Simulates experimental outcomes | Observation records |
-| 5 | Trace Logger | Append-only decision audit trail | SQLite database |
-| 6 | Insight Engine | Post-hoc causal attribution | Insight report |
-| 7 | Communication | Human-readable rationales + dashboard | Streamlit UI |
+**Steps:**
+1. Set your objective names in the sidebar to match your CSV column names
+2. Set input dimensions to match the number of `x_*` columns in your CSV
+3. Expand the upload panel and upload your CSV
+4. Click Launch Campaign — AEDE will fit to your data and recommend next experiments
 
----
-
-## What this does not do
-
-- It is **not** a molecular property predictor — it consumes predictions, does not generate them.
-- It is **not** a generative chemistry model — it selects from candidate pools.
-- It is **not** a wet-lab automation system — the IVO layer is a calibrated simulator.
-- It is **not** claiming biological realism — the benchmarks demonstrate decision-theoretic rigor on a realistic substrate.
+The recommended experiments appear in the **Recent selected experiments** table. Export the Pareto front CSV and insight report JSON using the buttons at the bottom.
 
 ---
 
-## Honest comparison with prior work
-
-| System | What it does | What AEDE adds |
-|--------|-------------|----------------|
-| **BATCHIE** (Stanton et al., 2025, *Nature Comms*) | Batch adaptive design maximising mutual information | Stopping criteria, cost accounting, causal attribution |
-| **EGBO** (Deshwal et al., 2024, *npj Comp. Mat.*) | Evolution-guided Bayesian optimisation for multi-objective | Decision-level intelligence on top of EGBO backbone |
-| **Atlas** (Aspuru-Guzik group) | Modular BO library | Explicit stopping + budget yield reporting |
-
-AEDE does not claim to outperform these at optimisation. It adds **campaign economics** — when to stop, what each experiment cost, and why the campaign behaved the way it did.
+## Repository structure
+```
+aede/
+├── app.py                          ← Streamlit dashboard
+├── requirements.txt                ← Core dependencies
+├── requirements-production.txt     ← Adds torch + BoTorch
+├── setup.py
+├── aede/
+│   ├── __init__.py
+│   ├── campaign.py                 ← Main orchestrator
+│   ├── cli.py                      ← python -m aede.cli
+│   └── modules/
+│       ├── problem_framing.py      ← ProblemSpec, Objective, BudgetSpec
+│       ├── candidate_generation.py ← BO, NSGA-II, diversity strategies
+│       ├── constraint_layer.py     ← Hard filter + learnable GP classifier
+│       ├── decision_engine.py      ← EPI scoring + stopping criterion
+│       ├── ivo_layer.py            ← Benchmark functions
+│       ├── trace_logger.py         ← Append-only SQLite
+│       ├── insight_engine.py       ← Post-campaign attribution
+│       ├── communication.py        ← Rationale generation
+│       ├── surrogate.py            ← Default sklearn GP
+│       └── surrogate_botorch.py    ← Production BoTorch GP
+├── configs/
+│   ├── vlmop2_quick.yaml
+│   ├── molecular_admet.yaml
+│   └── high_constraint.yaml
+└── aede/tests/
+    ├── run_tests.py                ← Standalone (no pytest needed)
+    └── test_aede.py                ← pytest-compatible
+```
 
 ---
 
-## Installation
-
-### Lightweight (default — no GPU required)
-
+## Running tests
 ```bash
-pip install -r requirements.txt
+# Standalone (no pytest required)
+python aede/tests/run_tests.py
+
+# With pytest
+python -m pytest aede/tests/test_aede.py -v
 ```
 
-Required packages: `numpy scipy scikit-learn pandas pyyaml streamlit plotly`
+34 tests. CI runs on Python 3.9, 3.10, 3.11 via GitHub Actions.
 
-### Production (BoTorch + GPyTorch backend)
+---
 
+## CLI usage
 ```bash
-pip install -r requirements.txt -r requirements-production.txt
-```
-
-The production backend (`aede/modules/surrogate_botorch.py`) is a drop-in replacement that activates automatically when `torch` is importable. It provides:
-
-- Proper gradient-based qNEHVI optimisation (not MC sampling)
-- GPU acceleration (CUDA + Apple Silicon MPS)
-- Automatic relevance determination kernels
-- Sobol QMC sampling for better posterior approximation
-
-```python
-# To explicitly use BoTorch backend:
-from aede.modules.surrogate_botorch import BoTorchSurrogate, get_surrogate
-
-surrogate = get_surrogate(n_objectives=2, seed=42)
-# Falls back to sklearn GP if torch not installed
+python -m aede.cli --config configs/vlmop2_quick.yaml
+python -m aede.cli --config configs/molecular_admet.yaml --verbose
 ```
 
 ---
 
-## Usage
-
-### Python API
-
+## Python API
 ```python
 from aede import run_campaign, ProblemSpec, Objective, BudgetSpec, StoppingCriterion
 
 spec = ProblemSpec(
     name="my_campaign",
     objectives=[
-        Objective(name="binding_affinity", direction="maximize"),
-        Objective(name="toxicity_score",   direction="minimize"),
+        Objective("yield", "maximize"),
+        Objective("cost",  "minimize"),
     ],
-    budget=BudgetSpec(experiments=200, per_iteration_cap=10),
+    budget=BudgetSpec(experiments=60, per_iteration_cap=5),
     stopping_criterion=StoppingCriterion(
         eig_per_cost_threshold=0.005,
         consecutive_iterations=3,
-        min_experiments=30,
+        min_experiments=15,
     ),
-    benchmark="molecular",
-    n_input_dims=5,
+    benchmark="vlmop2",
+    n_input_dims=2,
+    candidate_pool_size=60,
     random_seed=42,
 )
 
-results = run_campaign(spec, db_path="results/campaign.db", verbose=True)
+results = run_campaign(spec, db_path="campaign.db", verbose=True)
 
-print(f"Final Pareto HV:  {results['hv_history'][-1]:.4f}")
-print(f"Experiments used: {results['n_experiments']}")
-print(f"\nKey findings:")
-for finding in results['insight_report'].key_findings:
-    print(f"  • {finding}")
+print(f"HV: {results['hv_history'][-1]:.4f}")
+print(f"Pareto front: {len(results['pareto_front'])} points")
+for finding in results["insight_report"].key_findings:
+    print(" •", finding)
 ```
 
-### YAML config + CLI
+### Warm-starting from real data
+```python
+import numpy as np
 
-```bash
-python -m aede.cli --config configs/molecular_admet.yaml --db results/run1.db
-```
+X_real = np.array([[0.12, 0.55], [0.43, 0.21], [0.88, 0.90]])  # inputs
+Y_real = np.array([[0.81, 0.63], [0.74, 0.71], [0.51, 0.82]])  # objectives
+F_real = np.array([1, 1, 0])                                    # feasibility
 
-### Streamlit dashboard
-
-```bash
-streamlit run app.py
-```
-
----
-
-## Benchmarks
-
-Three IVO landscapes of increasing difficulty:
-
-| Benchmark | Objectives | Feasible space | Primary use |
-|-----------|-----------|---------------|-------------|
-| `vlmop2` | 2 (analytic) | 100% | Sanity check, fast iteration |
-| `molecular` | 2 (RFF proxy) | ~70% (MW constraint) | Realistic molecular topology |
-| `high_constraint` | 3 | ~15% | Stress test for constraint intelligence |
-
----
-
-## Evaluation metrics
-
-| Metric | Definition | Target |
-|--------|-----------|--------|
-| Hypervolume Indicator (HVI) | Volume dominated by Pareto front | Maximise |
-| Budget efficiency | HVI(stop) / HVI(budget exhausted) | > 90% |
-| Informative fraction | Experiments that improved HVI / total | > 60% |
-| Constraint precision | Feasible candidates selected / total selected | Maximise |
-| Stopping accuracy | Convergence before budget exhaustion | Campaign-dependent |
-
----
-
-## Running tests
-
-```bash
-# Without pytest:
-python tests/run_tests.py
-
-# With pytest:
-pip install pytest
-python -m pytest tests/ -v
+results = run_campaign(
+    spec,
+    db_path=":memory:",
+    seed_X=X_real,
+    seed_Y=Y_real,
+    seed_feasible=F_real,
+)
 ```
 
 ---
 
-## Project structure
+## Next steps for production use
 
-```
-aede/
-├── aede/
-│   ├── __init__.py
-│   ├── campaign.py              # Main orchestrator
-│   ├── cli.py                   # CLI entry point
-│   └── modules/
-│       ├── problem_framing.py   # Module 0: Config + validation
-│       ├── candidate_generation.py  # Module 1: BO, NSGA-II, diversity
-│       ├── constraint_layer.py  # Module 2: Hard + soft constraints
-│       ├── decision_engine.py   # Module 3: Scoring + stopping
-│       ├── ivo_layer.py         # Module 4: Benchmark simulators
-│       ├── trace_logger.py      # Module 5: Append-only SQLite log
-│       ├── insight_engine.py    # Module 6: Post-hoc attribution
-│       ├── communication.py     # Module 7a: Rationale generation
-│       ├── surrogate.py         # Default: sklearn GP
-│       └── surrogate_botorch.py # Production: BoTorch + GPyTorch
-├── app.py                       # Streamlit dashboard
-├── configs/                     # Example YAML configs
-│   ├── vlmop2_quick.yaml
-│   ├── molecular_admet.yaml
-│   └── high_constraint.yaml
-├── tests/
-│   ├── test_aede.py             # pytest-compatible tests
-│   └── run_tests.py             # Standalone test runner
-├── requirements.txt             # Lightweight (no GPU)
-├── requirements-production.txt  # BoTorch stack
-└── setup.py
-```
+1. **Manual iteration loop** — after each campaign run, download the recommended `x_*` values from the table, run them in your lab, add the results to your CSV, and re-upload for the next iteration.
+2. **Automate the loop** — connect AEDE to your LIMS, ELN, or database so observations flow back automatically.
+3. **Replace the benchmark** — subclass `BaseIVO` in `aede/modules/ivo_layer.py` to call your real measurement system or simulation API instead of the synthetic benchmarks.
+4. **Production surrogate** — install `requirements-production.txt` to activate the BoTorch backend with proper qNEHVI and GPU support.
+5. **Authentication** — add `streamlit-authenticator` to restrict access to the Streamlit app if sharing externally.
 
 ---
 
-## Key references
+## Dependencies
 
-- Stanton et al. (2025). *BATCHIE: Efficient Prediction of Batch Drug Combination Experiments.* Nature Communications.
-- Deshwal et al. (2024). *EGBO: Evolution-Guided Bayesian Optimization.* npj Computational Materials.
-- Gittins (1979). *Bandit Processes and Dynamic Allocation Indices.* JRSS Series B.
-- Balandat et al. (2020). *BoTorch: A Framework for Efficient Monte-Carlo Bayesian Optimization.* NeurIPS.
+**Core:** numpy, scipy, scikit-learn, pandas, pyyaml, streamlit, plotly
 
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+**Production:** torch ≥ 2.1, gpytorch ≥ 1.11, botorch ≥ 0.9.4

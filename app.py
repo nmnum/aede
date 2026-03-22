@@ -31,20 +31,22 @@ st.set_page_config(
 st.markdown("""
 <style>
     .finding-box {
-        background: #eef2fb;
-        border-left: 4px solid #1f3a6e;
+        background: #1e2d4a;
+        border-left: 4px solid #4a90d9;
         padding: 0.75rem 1rem;
         border-radius: 0 6px 6px 0;
         margin: 0.4rem 0;
         font-size: 0.9rem;
+        color: #e8edf5 !important;
     }
     .warning-box {
-        background: #fff8e6;
+        background: #3a2a0a;
         border-left: 4px solid #e6a817;
         padding: 0.75rem 1rem;
         border-radius: 0 6px 6px 0;
         margin: 0.4rem 0;
         font-size: 0.9rem;
+        color: #f5e6c0 !important;
     }
     .section-header {
         font-size: 1.1rem;
@@ -57,10 +59,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Persistent store (fix #1) ──────────────────────────────────────────────────
+# ── Persistent store ───────────────────────────────────────────────────────────
 # Stored in session_state so it survives reruns.
-# The background thread writes ONLY to _store (a plain dict reference),
-# never directly to st.session_state (fix #2).
+# Background thread writes ONLY to _store (plain dict), never session_state directly.
 if "store" not in st.session_state:
     st.session_state.store = {
         "live_hv": [],
@@ -71,6 +72,10 @@ if "store" not in st.session_state:
         "results": None,
         "logger": None,
         "campaign_hash": None,
+        "upload_X": None,
+        "upload_Y": None,
+        "upload_feasible": None,
+        "upload_n_dims": None,
     }
 
 _store = st.session_state.store  # local alias — same object, survives reruns
@@ -100,10 +105,10 @@ def make_pareto_fig(Y_all, pareto_front, obj_names):
         xaxis_title=obj_names[0], yaxis_title=obj_names[1],
         height=360, margin=dict(l=40, r=20, t=30, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="#1a1a2e", paper_bgcolor="#1a1a2e", font=dict(color="#e0e0e0"),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0")
-    fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0")
+    fig.update_xaxes(showgrid=True, gridcolor="#2a2a4a")
+    fig.update_yaxes(showgrid=True, gridcolor="#2a2a4a")
     return fig
 
 
@@ -121,10 +126,10 @@ def make_hv_fig(hv_history):
     fig.update_layout(
         xaxis_title="Iteration", yaxis_title="Hypervolume",
         height=240, margin=dict(l=40, r=20, t=20, b=40),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="#1a1a2e", paper_bgcolor="#1a1a2e", font=dict(color="#e0e0e0"),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0")
-    fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0")
+    fig.update_xaxes(showgrid=True, gridcolor="#2a2a4a")
+    fig.update_yaxes(showgrid=True, gridcolor="#2a2a4a")
     return fig
 
 
@@ -145,7 +150,7 @@ def make_eig_fig(hv_data, threshold):
     fig.update_layout(
         xaxis_title="Iteration", yaxis_title="EIG per cost",
         height=240, margin=dict(l=40, r=20, t=20, b=40),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="#1a1a2e", paper_bgcolor="#1a1a2e", font=dict(color="#e0e0e0"),
     )
     return fig
 
@@ -168,12 +173,12 @@ def make_weights_fig(weight_history):
         yaxis_range=[0, 1], height=220,
         margin=dict(l=40, r=20, t=20, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        plot_bgcolor="white", paper_bgcolor="white",
+        plot_bgcolor="#1a1a2e", paper_bgcolor="#1a1a2e", font=dict(color="#e0e0e0"),
     )
     return fig
 
 
-# ── Sidebar: configuration only ────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚗ AEDE")
     st.caption("Adaptive Experimental Decision Engine")
@@ -238,6 +243,57 @@ st.title("⚗ AEDE — Adaptive Experimental Decision Engine")
 st.caption("Configure in the sidebar, then launch. Results appear below as the campaign runs.")
 st.divider()
 
+# ── Custom data upload ─────────────────────────────────────────────────────────
+with st.expander("📂 Upload your own experimental data (optional)", expanded=False):
+    st.markdown("""
+**Use this if you already have real experimental data** and want AEDE to fit its surrogate
+to your results and recommend the next experiments to run.
+
+**Required CSV format:**
+- Columns `x_0, x_1, ... x_N` — your input variables (one per dimension)
+- Columns matching your objective names exactly (e.g. `yield`, `cost`)
+- Optional column `feasible` — 1 if experiment succeeded, 0 if it violated constraints
+
+**Example (2 inputs, 2 objectives):**
+```
+x_0,x_1,yield,selectivity,feasible
+0.12,0.55,0.81,0.63,1
+0.43,0.21,0.74,0.71,1
+0.88,0.90,0.51,0.82,0
+```
+When data is uploaded, AEDE skips random initialisation and warm-starts its surrogate from your measurements.
+""")
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"], key="data_upload")
+    if uploaded_file is not None:
+        try:
+            upload_df = pd.read_csv(uploaded_file)
+            st.success(f"Loaded {len(upload_df)} rows × {len(upload_df.columns)} columns")
+            st.dataframe(upload_df.head(5), use_container_width=True, hide_index=True)
+            x_cols = [c for c in upload_df.columns if c.startswith("x_")]
+            obj_cols = [c for c in upload_df.columns if c in obj_names]
+            feasible_col = "feasible" if "feasible" in upload_df.columns else None
+            if not x_cols:
+                st.warning("No input columns found — name them x_0, x_1, x_2, …")
+            elif not obj_cols:
+                st.warning(f"No objective columns matched. Your objective names are: {obj_names}")
+            else:
+                st.info(f"Detected **{len(x_cols)} inputs** ({', '.join(x_cols)}), "
+                        f"**{len(obj_cols)} objectives** ({', '.join(obj_cols)})"
+                        + (" + feasibility column ✓" if feasible_col else ""))
+                _store["upload_X"] = upload_df[x_cols].values.astype(float)
+                _store["upload_Y"] = upload_df[obj_cols].values.astype(float)
+                _store["upload_feasible"] = (
+                    upload_df[feasible_col].values.astype(int)
+                    if feasible_col else np.ones(len(upload_df), dtype=int)
+                )
+                _store["upload_n_dims"] = len(x_cols)
+                st.success("Data ready — click Launch Campaign to warm-start from your data.")
+        except Exception as e:
+            st.error(f"Could not parse file: {e}")
+
+st.divider()
+
+# ── Launch button ──────────────────────────────────────────────────────────────
 col_btn, col_status = st.columns([1, 4])
 with col_btn:
     go_btn = st.button(
@@ -286,10 +342,12 @@ if go_btn and not _store["running"]:
     if os.path.exists(db):
         os.remove(db)
 
-    # Capture sidebar values for use inside thread closure (fix #4)
     _n_exp = n_exp
     _batch_size = batch_size
     _eig_thresh = eig_thresh
+    _upload_X = _store.get("upload_X")
+    _upload_Y = _store.get("upload_Y")
+    _upload_feasible = _store.get("upload_feasible")
 
     def _run():
         """Runs in background thread. ONLY writes to _store — never session_state."""
@@ -304,7 +362,8 @@ if go_btn and not _store["running"]:
 
         try:
             campaign_results = run_campaign(
-                spec, db_path=db, verbose=False, n_mc=n_mc, on_iteration=on_iter
+                spec, db_path=db, verbose=False, n_mc=n_mc, on_iteration=on_iter,
+                seed_X=_upload_X, seed_Y=_upload_Y, seed_feasible=_upload_feasible,
             )
             _store["results"] = campaign_results
             _store["logger"] = campaign_results["logger"]
@@ -315,7 +374,7 @@ if go_btn and not _store["running"]:
     threading.Thread(target=_run, daemon=True).start()
     st.rerun()
 
-# ── Live progress (while running) ──────────────────────────────────────────────
+# ── Live progress ──────────────────────────────────────────────────────────────
 if _store["running"]:
     _live_hv = _store["live_hv"]
     _live_iter = _store["live_iter"]
@@ -332,7 +391,7 @@ if _store["running"]:
     time.sleep(0.4)
     st.rerun()
 
-# ── Results section ────────────────────────────────────────────────────────────
+# ── Results ────────────────────────────────────────────────────────────────────
 campaign_results = _store["results"]
 if campaign_results is None:
     st.stop()
@@ -474,7 +533,7 @@ with col_calib:
             xaxis_title="Iteration",
             yaxis_title="Calibration Error (ECE)",
             height=200, margin=dict(l=40, r=20, t=20, b=40),
-            plot_bgcolor="white", paper_bgcolor="white",
+            plot_bgcolor="#1a1a2e", paper_bgcolor="#1a1a2e", font=dict(color="#e0e0e0"),
         )
         st.plotly_chart(fig_cal, use_container_width=True)
 
@@ -489,7 +548,7 @@ with col_calib:
             xaxis_title="Iteration", yaxis_title="Fraction violated",
             yaxis_range=[0, 1], height=200,
             margin=dict(l=40, r=20, t=20, b=40),
-            plot_bgcolor="white", paper_bgcolor="white",
+            plot_bgcolor="#1a1a2e", paper_bgcolor="#1a1a2e", font=dict(color="#e0e0e0"),
         )
         st.plotly_chart(fig_viol, use_container_width=True)
 

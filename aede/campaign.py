@@ -12,7 +12,7 @@ Usage:
 from __future__ import annotations
 import numpy as np
 import time
-from typing import Optional
+from typing import Optional, Callable
 from pathlib import Path
 
 from .modules.problem_framing import ProblemSpec, load_spec_from_yaml, load_spec_from_dict
@@ -31,17 +31,23 @@ def run_campaign(
     db_path: str = ":memory:",
     verbose: bool = True,
     n_mc: int = 64,
-    on_iteration: Optional[callable] = None,
+    on_iteration: Optional[Callable] = None,
+    seed_X: Optional[np.ndarray] = None,
+    seed_Y: Optional[np.ndarray] = None,
+    seed_feasible: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Run a complete AEDE campaign.
 
     Args:
-        spec:         Validated ProblemSpec.
-        db_path:      SQLite path for Decision Trace. Use ':memory:' for ephemeral.
-        verbose:      Print iteration summaries to stdout.
-        n_mc:         Monte Carlo samples for EPI estimation.
-        on_iteration: Optional callback(iteration, manifest, hv) for live UI updates.
+        spec:          Validated ProblemSpec.
+        db_path:       SQLite path for Decision Trace. Use ':memory:' for ephemeral.
+        verbose:       Print iteration summaries to stdout.
+        n_mc:          Monte Carlo samples for EPI estimation.
+        on_iteration:  Optional callback(iteration, manifest, hv) for live UI updates.
+        seed_X:        Optional real experimental inputs (n_obs x n_dims) to warm-start from.
+        seed_Y:        Optional real objective measurements (n_obs x n_obj) to warm-start from.
+        seed_feasible: Optional feasibility flags (n_obs,) — 1=valid, 0=constraint violated.
 
     Returns:
         dict with keys: campaign_hash, hv_history, n_experiments, insight_report
@@ -69,10 +75,15 @@ def run_campaign(
         seed=spec.random_seed,
     )
 
-    # Bounds: use IVO-appropriate defaults
+    _BENCHMARK_BOUNDS = {
+        "vlmop2":          (-2.0, 2.0),
+        "molecular":       (-3.0, 3.0),
+        "high_constraint": (-1.5, 1.5),
+    }
+    lo, hi = _BENCHMARK_BOUNDS.get(spec.benchmark, (-3.0, 3.0))
     bounds = np.column_stack([
-        np.full(spec.n_input_dims, -3.0),
-        np.full(spec.n_input_dims, 3.0),
+        np.full(spec.n_input_dims, lo),
+        np.full(spec.n_input_dims, hi),
     ])
 
     generator = CandidateGenerator(
@@ -86,31 +97,51 @@ def run_campaign(
     logger = DecisionTraceLogger(db_path=db_path)
     comms = CommunicationLayer()
 
-    # Register campaign
     spec_dict = spec.model_dump() if hasattr(spec, "model_dump") else spec.dict()
     logger.register_campaign(campaign_hash, spec.name, spec_dict)
 
-    # ── Initial random observations for warm-start ────────────────────────────
-    n_init = min(max(spec.budget.per_iteration_cap * 2, 10), spec.budget.experiments // 5)
-    X_init = rng.uniform(-3, 3, size=(n_init, spec.n_input_dims))
-    init_obs = ivo.observe_batch(X_init, ids=[f"init_{i:03d}" for i in range(n_init)])
+    # ── Initial observations: uploaded data or random warm-start ──────────────
+    if seed_X is not None and seed_Y is not None:
+        n_init = len(seed_X)
+        X_all = seed_X.copy()
+        Y_all = seed_Y.copy()
+        feasible_flags = (
+            seed_feasible.copy() if seed_feasible is not None
+            else np.ones(len(seed_X), dtype=int)
+        )
+        if verbose:
+            print(f"Warm-starting from {len(X_all)} uploaded observations.")
+        from aede.modules.ivo_layer import ObservationRecord
+        init_obs = [
+            ObservationRecord(
+                candidate_id=f"upload_{i:03d}",
+                X=X_all[i],
+                objectives=Y_all[i],
+                constraint_valid=bool(feasible_flags[i]),
+                experiment_cost=1.0,
+            )
+            for i in range(len(X_all))
+        ]
+        logger.log_observations(campaign_hash, 0, init_obs)
+        constraint_layer.update(X_all, feasible_flags)
+        constraint_layer.update_cost_model(X_all, np.ones(len(X_all)))
+    else:
+        n_init = min(max(spec.budget.per_iteration_cap * 2, 10), spec.budget.experiments // 5)
+        X_init = rng.uniform(-3, 3, size=(n_init, spec.n_input_dims))
+        init_obs = ivo.observe_batch(X_init, ids=[f"init_{i:03d}" for i in range(n_init)])
+        X_all = X_init.copy()
+        Y_all = np.array([o.objectives for o in init_obs])
+        feasible_flags = np.array([int(o.constraint_valid) for o in init_obs])
+        logger.log_observations(campaign_hash, 0, init_obs)
+        constraint_layer.update(X_all, feasible_flags)
+        constraint_layer.update_cost_model(
+            X_all, np.array([o.experiment_cost for o in init_obs])
+        )
 
-    X_all = X_init.copy()
-    Y_all = np.array([o.objectives for o in init_obs])
-    feasible_flags = np.array([int(o.constraint_valid) for o in init_obs])
-
-    # Update constraint layer with initial observations
-    constraint_layer.update(X_all, feasible_flags)
-    constraint_layer.update_cost_model(
-        X_all, np.array([o.experiment_cost for o in init_obs])
-    )
-
-    # Fit initial surrogate (only on feasible observations)
     feasible_mask = feasible_flags.astype(bool)
     if feasible_mask.sum() >= 3:
         surrogate.fit(X_all[feasible_mask], Y_all[feasible_mask])
 
-    # Build initial Pareto front
     pareto_front = _update_pareto_front(Y_all[feasible_mask] if feasible_mask.sum() > 0 else Y_all)
 
     budget_remaining = spec.budget.experiments - n_init
@@ -120,7 +151,6 @@ def run_campaign(
     while budget_remaining > 0:
         iteration += 1
 
-        # 1. Generate candidates
         candidates = generator.generate(
             pool_size=spec.candidate_pool_size,
             surrogate=surrogate if surrogate._is_fit else None,
@@ -128,7 +158,6 @@ def run_campaign(
             pareto_front=pareto_front,
         )
 
-        # 2. Filter through constraint layer
         filtered, constraint_results = constraint_layer.filter(candidates)
 
         if len(filtered) == 0:
@@ -139,7 +168,6 @@ def run_campaign(
             filtered = [Candidate(id=f"fallback_{i}", X=x, provenance="diversity") for i, x in enumerate(fallback_X)]
             constraint_results = []
 
-        # 3. Decision Engine
         manifest = decision_engine.decide(
             candidates=filtered,
             constraint_results=constraint_results,
@@ -151,16 +179,14 @@ def run_campaign(
             n_mc=n_mc,
         )
 
-        # 4. Annotate with rationales
         manifest = comms.annotate_manifest(manifest)
 
-        # 5. Run selected experiments through IVO
         selected_X = np.array([r.X for r in manifest.selected])
         selected_ids = [r.candidate_id for r in manifest.selected]
         new_obs = ivo.observe_batch(selected_X, ids=selected_ids)
-        ivo.register_surrogate(surrogate.predict_fn if surrogate._is_fit else None)
+        if surrogate._is_fit:
+            ivo.register_surrogate(surrogate.predict_fn)
 
-        # 6. Update data
         new_Y = np.array([o.objectives for o in new_obs])
         new_feasible = np.array([int(o.constraint_valid) for o in new_obs])
 
@@ -168,22 +194,17 @@ def run_campaign(
         Y_all = np.vstack([Y_all, new_Y])
         feasible_flags = np.concatenate([feasible_flags, new_feasible])
 
-        # 7. Update constraint layer
         constraint_layer.update(selected_X, new_feasible)
         constraint_layer.update_cost_model(
             selected_X, np.array([o.experiment_cost for o in new_obs])
         )
 
-        # 8. Update surrogate (feasible observations only)
         feasible_mask = feasible_flags.astype(bool)
         if feasible_mask.sum() >= 5:
             surrogate.fit(X_all[feasible_mask], Y_all[feasible_mask])
 
-        # 9. Update Pareto front
         pareto_front = _update_pareto_front(Y_all[feasible_mask] if feasible_mask.sum() > 0 else Y_all)
 
-        # 10. Update strategy weights
-        # Compute per-strategy HV improvement from this iteration
         by_provenance = {}
         for rec, obs in zip(manifest.selected, new_obs):
             p = rec.provenance
@@ -201,7 +222,6 @@ def run_campaign(
 
         generator.update_weights(hv_improvements)
 
-        # 11. Log everything
         surrogate_snap = surrogate.state_snapshot() if surrogate._is_fit else {}
         logger.log_iteration(campaign_hash, manifest, surrogate_snap)
         logger.log_observations(campaign_hash, iteration, new_obs)
@@ -214,7 +234,6 @@ def run_campaign(
         if on_iteration:
             on_iteration(iteration, manifest, float(compute_hypervolume(pareto_front, spec.reference_point())))
 
-        # 12. Check stopping
         if manifest.should_stop:
             if verbose:
                 print(comms.format_stop_notice(manifest))
@@ -223,14 +242,13 @@ def run_campaign(
     # ── Post-campaign ─────────────────────────────────────────────────────────
     logger.mark_campaign_done(campaign_hash, "completed")
 
-    # Generate insight report
     insight_engine = InsightEngine(logger)
     insight = insight_engine.generate_report(campaign_hash)
 
     if verbose:
         print(f"\n{'='*60}")
         print(f"Campaign complete: {spec.name}")
-        print(f"Iterations: {iteration}  |  Experiments: {len(X_all) - n_init + n_init}")
+        print(f"Iterations: {iteration}  |  Experiments: {len(X_all)}")
         print(f"Final Pareto HV: {compute_hypervolume(pareto_front, spec.reference_point()):.4f}")
         print(f"\nKey findings:")
         for finding in insight.key_findings:
@@ -259,7 +277,6 @@ def _update_pareto_front(Y: np.ndarray) -> np.ndarray:
         for j in range(n):
             if i == j:
                 continue
-            # j dominates i if j >= i in all objectives and j > i in at least one
             if np.all(Y[j] >= Y[i]) and np.any(Y[j] > Y[i]):
                 is_dominated[i] = True
                 break
