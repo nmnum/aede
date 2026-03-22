@@ -1,0 +1,15 @@
+# AEDE — Production requirements (BoTorch + GPyTorch backend)
+# Installs everything in requirements.txt PLUS the heavy ML stack.
+#
+# GPU (NVIDIA): pip install -r requirements-production.txt
+# GPU (Apple Silicon): pip install -r requirements-production.txt (MPS auto-detected)
+# CPU only: works but slow for large campaigns (>500 experiments)
+#
+# Full install: pip install -r requirements.txt -r requirements-production.txt
+
+torch>=2.1
+gpytorch>=1.11
+botorch>=0.9.4
+
+# Optional but recommended with BoTorch
+linear_operator>=0.5.2

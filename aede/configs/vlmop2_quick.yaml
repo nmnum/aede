@@ -1,0 +1,28 @@
+# AEDE Example Configuration: VLMOP2 (quick sanity check)
+# Run: python -m aede.cli --config configs/vlmop2_quick.yaml
+
+name: vlmop2_quick
+benchmark: vlmop2
+n_input_dims: 2
+random_seed: 42
+
+objectives:
+  - name: objective_1
+    direction: maximize
+    unit: dimensionless
+  - name: objective_2
+    direction: maximize
+    unit: dimensionless
+
+budget:
+  experiments: 100
+  per_iteration_cap: 8
+  cost_ceiling: .inf
+
+stopping_criterion:
+  eig_per_cost_threshold: 0.005
+  consecutive_iterations: 3
+  min_experiments: 20
+
+surrogate_type: GP
+candidate_pool_size: 80

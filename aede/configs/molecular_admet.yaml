@@ -1,0 +1,40 @@
+# AEDE Example Configuration: Molecular Drug Discovery Proxy
+# Simulates a binding affinity vs. safety optimisation campaign
+# with synthesis cost and molecular weight constraints.
+
+name: molecular_admet_proxy
+benchmark: molecular
+n_input_dims: 5
+random_seed: 7
+
+objectives:
+  - name: binding_affinity
+    direction: maximize
+    unit: pIC50_proxy
+  - name: safety_score
+    direction: maximize
+    unit: inverse_hERG_proxy
+
+hard_constraints:
+  - property: molecular_weight
+    max: 8.0
+    description: "Lipinski Ro5 proxy — sum of |features| < 8"
+
+soft_constraints:
+  - property: synthesis_cost
+    max_violation_probability: 0.20
+    cost_multiplier: 1.8
+    description: "Synthesis complexity penalty"
+
+budget:
+  experiments: 200
+  per_iteration_cap: 10
+  cost_ceiling: 500.0
+
+stopping_criterion:
+  eig_per_cost_threshold: 0.003
+  consecutive_iterations: 4
+  min_experiments: 30
+
+surrogate_type: GP
+candidate_pool_size: 120

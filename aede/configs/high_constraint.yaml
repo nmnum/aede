@@ -1,0 +1,43 @@
+# AEDE Example Configuration: High-Constraint Tri-Objective
+# ~15% feasible space. Stress-tests the Constraint Intelligence Layer.
+# Use this to benchmark constraint_precision metric.
+
+name: high_constraint_stress
+benchmark: high_constraint
+n_input_dims: 6
+random_seed: 99
+
+objectives:
+  - name: potency
+    direction: maximize
+    unit: proxy
+  - name: selectivity
+    direction: maximize
+    unit: proxy
+  - name: metabolic_stability
+    direction: maximize
+    unit: proxy
+
+hard_constraints:
+  - property: within_sphere
+    max: 4.0
+    description: "Structural bounding sphere — sum(x^2) < 4"
+
+soft_constraints:
+  - property: reagent_scarcity
+    max_violation_probability: 0.30
+    cost_multiplier: 2.0
+    description: "Reagent depletion risk"
+
+budget:
+  experiments: 300
+  per_iteration_cap: 10
+  cost_ceiling: 1000.0
+
+stopping_criterion:
+  eig_per_cost_threshold: 0.002
+  consecutive_iterations: 4
+  min_experiments: 40
+
+surrogate_type: GP
+candidate_pool_size: 150

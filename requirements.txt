@@ -1,0 +1,19 @@
+# AEDE — Core requirements (lightweight, no GPU needed)
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.2
+pandas>=1.5
+pyyaml>=6.0
+streamlit>=1.28
+plotly>=5.15
+
+# ── Production upgrade (uncomment for BoTorch backend) ──
+# torch>=2.1               # ~800MB — required for botorch
+# gpytorch>=1.11
+# botorch>=0.9.4
+
+# ── Optional: better evolutionary optimisation ──
+# pymoo>=0.6.1             # NSGA-III (default uses NSGA-II in pure numpy)
+
+# ── Optional: molecular features ──
+# rdkit>=2023.3.2          # Molecular descriptors, synthesisability scoring
