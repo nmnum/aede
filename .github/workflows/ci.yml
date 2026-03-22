@@ -35,12 +35,14 @@ jobs:
         pip install pytest
 
     - name: Run standalone test suite
-      run: python -m pytest tests/run_tests.py -v || python tests/run_tests.py
+      run: python tests/run_tests.py
+      working-directory: ${{ github.workspace }}
 
     - name: Run pytest
-      run: python -m pytest tests/test_aede.py -v --tb=short -x
+      run: |
+        python -m pytest tests/test_aede.py -v --tb=short -x --import-mode=importlib
       env:
-        PYTHONPATH: .
+        PYTHONPATH: ${{ github.workspace }}
 
   lint:
     runs-on: ubuntu-latest
