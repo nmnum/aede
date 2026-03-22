@@ -74,7 +74,7 @@ class InsightEngine:
         dominant_phases = self._summarise_dominant_phases(weight_history)
         ece_history, ece_trend = self._analyse_calibration(hv_history)
         violation_history = self._violation_history(observations)
-        cost_eff = self._cost_efficiency(hv_history, observations, decisions)
+        cost_eff = self._cost_efficiency(hv_history, observations, decisions, campaign_hash)
         feature_risks = self._feature_risk_from_decisions(decisions)
         findings = self._generate_findings(
             transitions, ece_trend, cost_eff, violation_history
@@ -112,8 +112,8 @@ class InsightEngine:
             return []
 
         def dominant(w: dict) -> str:
-            s = {k: v for k, v in w.items() if k != "iteration"}
-            return max(s, key=s.get) if s else "unknown"
+            s = {k: float(v) for k, v in w.items() if k != "iteration"}
+            return max(s, key=lambda k: s[k]) if s else "unknown"
 
         hv_map = {h["iteration"]: h["hv"] for h in hv_history}
         transitions = []
@@ -160,9 +160,9 @@ class InsightEngine:
         strategies = [k for k in weight_history[0] if k != "iteration"]
         phases, current_dom, phase_start = [], None, 0
 
-        def dominant(w):
-            s = {k: v for k, v in w.items() if k != "iteration"}
-            return max(s, key=s.get) if s else "unknown"
+        def dominant(w: dict) -> str:
+            s = {k: float(v) for k, v in w.items() if k != "iteration"}
+            return max(s, key=lambda k: s[k]) if s else "unknown"
 
         for w in weight_history:
             d = dominant(w)
@@ -249,33 +249,65 @@ class InsightEngine:
         hv_history: List[dict],
         observations: List[dict],
         decisions: List[dict],
+        campaign_hash: str = "",
     ) -> CostEfficiencyReport:
         n_exp = len(observations)
         total_cost = sum(obs.get("cost", 1.0) for obs in observations)
         hv_final = hv_history[-1]["hv"] if hv_history else 0.0
         hv_first = hv_history[0]["hv"] if hv_history else 0.0
 
-        # Informative fraction: experiments that were selected with score > median
-        scores = [d.get("decision_score", 0.0) for d in decisions]
-        if scores:
-            median_score = float(np.median(scores))
-            informative = sum(1 for s in scores if s > median_score)
-            informative_frac = informative / len(scores)
-        else:
-            informative_frac = 0.0
+        # Informative fraction: iterations where HV improved
+        hv_improved = 0
+        for i in range(1, len(hv_history)):
+            if hv_history[i]["hv"] > hv_history[i - 1]["hv"] + 1e-6:
+                hv_improved += 1
+        n_iter = max(len(hv_history) - 1, 1)
+        informative_frac = hv_improved / n_iter
 
-        # Budget efficiency: compare HV at early stopping vs theoretical max
-        stop_itr = next(
-            (h["iteration"] for h in hv_history if h.get("eig_per_cost", 1.0) < 0.02),
-            None,
-        )
-        if stop_itr and hv_final > 0:
-            hv_at_stop = next(
-                (h["hv"] for h in hv_history if h["iteration"] == stop_itr), hv_final
-            )
-            budget_eff = hv_at_stop / (hv_final + 1e-8)
+        # Find stopping iteration from DB (should_stop flag written by campaign loop)
+        stop_itr = None
+        try:
+            rows = self.logger._conn.execute(
+                "SELECT iteration, should_stop FROM iterations "
+                "WHERE campaign_hash=? ORDER BY iteration",
+                (campaign_hash,),
+            ).fetchall()
+            for row in rows:
+                if row[1]:
+                    stop_itr = int(row[0])
+                    break
+        except Exception:
+            pass
+
+        # stopped_early = stopping criterion fired AND budget was not exhausted
+        stopped_early = False
+        if stop_itr is not None:
+            try:
+                row = self.logger._conn.execute(
+                    "SELECT budget_remaining FROM iterations "
+                    "WHERE campaign_hash=? AND iteration=?",
+                    (campaign_hash, stop_itr),
+                ).fetchone()
+                if row and row[0] is not None and int(row[0]) > 0:
+                    stopped_early = True
+            except Exception:
+                stopped_early = stop_itr <= len(hv_history)
+
+        # Budget efficiency: fraction of budget SAVED (not consumed)
+        if stopped_early and stop_itr is not None:
+            try:
+                stop_row = self.logger._conn.execute(
+                    "SELECT budget_remaining FROM iterations "
+                    "WHERE campaign_hash=? AND iteration=?",
+                    (campaign_hash, stop_itr),
+                ).fetchone()
+                budget_remaining_at_stop = int(stop_row[0]) if stop_row else 0
+            except Exception:
+                budget_remaining_at_stop = 0
+            total_budget = n_exp + budget_remaining_at_stop
+            budget_eff = 1.0 - (n_exp / max(total_budget, 1))
         else:
-            budget_eff = 1.0
+            budget_eff = 0.0
 
         return CostEfficiencyReport(
             total_experiments=n_exp,
@@ -285,7 +317,7 @@ class InsightEngine:
             informative_fraction=informative_frac,
             budget_efficiency=budget_eff,
             cost_per_hv_unit=total_cost / max(hv_final, 1e-6),
-            stopped_early=stop_itr is not None,
+            stopped_early=stopped_early,
             stop_iteration=stop_itr,
         )
 
@@ -356,10 +388,18 @@ class InsightEngine:
                     f"Low constraint violation rate ({avg_viol:.0%}) — constraint layer operating effectively."
                 )
 
-        if cost_eff.stopped_early:
+        if cost_eff.stopped_early and cost_eff.stop_iteration is not None:
+            exps_used = cost_eff.total_experiments
+            budget_saved = cost_eff.budget_efficiency
             findings.append(
                 f"Campaign converged at iteration {cost_eff.stop_iteration} "
-                f"(budget efficiency: {cost_eff.budget_efficiency:.0%})."
+                f"using {exps_used} experiments — saved {budget_saved:.0%} of total budget "
+                f"while retaining the full Pareto front."
+            )
+        elif not cost_eff.stopped_early:
+            findings.append(
+                "Campaign ran to full budget exhaustion — the stopping criterion did not fire. "
+                "Consider raising the EIG/cost threshold or increasing consecutive iterations."
             )
 
         findings.append(
