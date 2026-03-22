@@ -232,14 +232,10 @@ with st.sidebar:
     st.caption("Adaptive Experimental Decision Engine")
     st.divider()
 
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "🚀 Run Campaign"
-
     tab = st.radio(
         "Navigation",
         ["🚀 Run Campaign", "📊 Live Monitor", "🔍 Insight Report"],
         label_visibility="collapsed",
-        key="active_tab",
     )
     st.divider()
 
