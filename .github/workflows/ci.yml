@@ -10,6 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11"]
 
@@ -25,7 +26,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
 
     - name: Install dependencies
       run: |
@@ -33,14 +34,15 @@ jobs:
         pip install -r requirements.txt
         pip install pytest
 
-    - name: Run unit + integration tests
+    - name: Run standalone test suite
       run: |
         python tests/run_tests.py
 
-    - name: Run with pytest (if available)
+    - name: Run pytest
       run: |
-        python -m pytest tests/test_aede.py -v --tb=short
-      continue-on-error: false
+        python -m pytest tests/test_aede.py -v --tb=short -x --import-mode=importlib
+      env:
+        PYTHONPATH: ${{ github.workspace }}
 
   lint:
     runs-on: ubuntu-latest
@@ -53,5 +55,4 @@ jobs:
       run: pip install flake8
     - name: Lint
       run: |
-        # Stop on syntax errors, ignore line length and style nits
         flake8 aede/ --count --select=E9,F63,F7,F82 --show-source --statistics
